@@ -2,9 +2,6 @@
 
 Recognising which of **15 cricket batting shots** is played in a short broadcast clip, using a CNN (EfficientNet-B0) to understand each frame and a recurrent network (Bi-GRU with temporal attention) to understand the motion over time.
 
-**Course:** Advanced Deep Learning, Indian Institute of Information Technology, Sri City
-**Team:** B Vishwesh (S20230010048) · B Srimanreddy (S20230010049) · E Tharun (S20230010081)
-
 ---
 
 ## Results at a glance
@@ -113,11 +110,3 @@ Approximate run times on one T4: features 7–10 min (02), crop detection ~2 h (
 - **Dataset, cropping approach and striker/bat detectors** come from M. K. Dihan, Abdullah, Amina and S. Ahmed, *CricShot10k: A Large-Scale Video Dataset for Cricket Shot Classification*, IEEE Access, vol. 14, pp. 23428–23447, 2026 ([code](https://github.com/Dihan69/CricShot10k)).
 - M. Tan and Q. Le, *EfficientNet: Rethinking Model Scaling for Convolutional Neural Networks*, ICML 2019.
 - K. Cho et al., *Learning Phrase Representations using RNN Encoder–Decoder for Statistical Machine Translation*, EMNLP 2014 (GRU).
-
-## Team contributions
-
-| Member | Contributions |
-|---|---|
-| B Vishwesh (S20230010048) | *to fill in* |
-| B Srimanreddy (S20230010049) | *to fill in* |
-| E Tharun (S20230010081) | *to fill in* |
