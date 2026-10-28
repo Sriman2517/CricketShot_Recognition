@@ -1,0 +1,4 @@
+model,val_f1,test_acc,acc_std,test_top3,test_f1
+Ours: Bi-GRU + attn,0.7032,0.7195,0.007,0.8741,0.7118
+Ours + spatial attn (B),0.6892,0.7012,0.0171,0.8778,0.6972
+Paper head + paper training (B + C),0.6999,0.722,0.0175,0.8765,0.713

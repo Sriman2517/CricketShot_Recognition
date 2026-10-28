@@ -1,0 +1,13 @@
+model,input,val_f1,test_acc,acc_std,test_top3,test_f1
+Mean-pool (no RNN),Full frame,0.4467,0.4531,0.0049,0.7622,0.4466
+LSTM + attn,Full frame,0.6068,0.6242,0.014,0.8709,0.618
+GRU + attn,Full frame,0.6227,0.6281,0.0168,0.8286,0.6146
+Bi-GRU + attn,Full frame,0.6301,0.6444,0.0027,0.8519,0.6283
+Mean-pool (no RNN),Per-frame crop,0.5504,0.5501,0.0097,0.8291,0.5402
+LSTM + attn,Per-frame crop,0.6916,0.6894,0.0089,0.8667,0.6851
+GRU + attn,Per-frame crop,0.6902,0.6958,0.0083,0.8548,0.6907
+Bi-GRU + attn,Per-frame crop,0.7032,0.7195,0.007,0.8741,0.7118
+Mean-pool (no RNN),Per-clip crop,0.5275,0.52,0.0109,0.8111,0.5089
+LSTM + attn,Per-clip crop,0.666,0.6684,0.0067,0.8701,0.6648
+GRU + attn,Per-clip crop,0.6655,0.678,0.0069,0.8632,0.6719
+Bi-GRU + attn,Per-clip crop,0.6748,0.6832,0.0009,0.8793,0.6754

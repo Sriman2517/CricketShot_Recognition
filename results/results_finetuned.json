@@ -1,0 +1,16 @@
+{
+  "test_acc": 0.8288888931274414,
+  "test_top3": 0.9259259104728699,
+  "test_macro_f1": 0.8275266132237824,
+  "best_val_acc": 0.825151264667511,
+  "epochs_run": 16,
+  "debug": false,
+  "settings": {
+    "batch": 8,
+    "accum": 4,
+    "lr_backbone": 0.0001,
+    "lr_head": 0.001,
+    "frames": 16,
+    "init_head": false
+  }
+}
