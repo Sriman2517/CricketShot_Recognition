@@ -1,5 +1,5 @@
 """
-Cricket Batting Shot Recognition - Streamlit demo
+Which shot was that? - Cricket batting shot recognition (Streamlit app)
 Advanced Deep Learning project, IIIT Sri City
 Team: B Vishwesh (S20230010048), B Srimanreddy (S20230010049), E Tharun (S20230010081)
 
@@ -10,14 +10,13 @@ Pipeline (same as our training notebooks 04 and 06):
 Model weights are downloaded from a Hugging Face model repository on first start (set HF_REPO below),
 or loaded from MODEL_DIR if the three .pt files are already there (useful for running locally).
 """
+import base64
+import html
 import os
 import tempfile
 import time
 
 import cv2
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import numpy as np
 import streamlit as st
 import torch
@@ -25,9 +24,8 @@ import torch.nn as nn
 from torchvision.models import efficientnet_b0
 
 # ----------------------------------------------------------------------------- settings
-HF_REPO = "Srimanreddy822/cricket-shot-models"   
+HF_REPO = "Srimanreddy822/cricket-shot-models"  
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
-WEIGHT_FILES = ["best_finetuned.pt", "Player_Type_Detection_Model.pt", "Bat_Detection_Model.pt"]
 
 NUM_FRAMES, IMG = 16, 224          # must match training
 PAD, CONF, YOLO_IMGSZ = 0.10, 0.25, 640
@@ -36,6 +34,24 @@ MAX_SECONDS = 20                   # only the first 20 s of a long upload are re
 CLASSES = ["Cover Drive", "Defensive", "Down The Wicket", "Flick", "Hook", "Late Cut",
            "Lofted Legside", "Lofted Offside", "Pull", "Reverse Sweep", "Scoop",
            "Square Cut", "Straight Drive", "Sweep", "Upper Cut"]   # label order used in training
+
+SHOT_NOTES = {
+    "Cover Drive": "A front-foot drive along the ground through the covers, on the off side.",
+    "Defensive": "A blocking stroke played to keep the ball out rather than to score.",
+    "Down The Wicket": "The batter steps out of the crease towards the bowler to meet the ball early.",
+    "Flick": "A wristy stroke that turns a straight ball away towards the leg side.",
+    "Hook": "A horizontal-bat shot to a short ball around head height, hit to the leg side.",
+    "Late Cut": "A delicate cut played late, steering the ball fine past the slips.",
+    "Lofted Legside": "A shot hit in the air over the leg-side field.",
+    "Lofted Offside": "A shot hit in the air over the off-side field.",
+    "Pull": "A horizontal-bat shot to a short ball around waist height, hit to the leg side.",
+    "Reverse Sweep": "A sweep with the hands reversed, sending the ball to the off side.",
+    "Scoop": "The ball is lifted over the wicketkeeper with an open bat face.",
+    "Square Cut": "A horizontal-bat shot to a short, wide ball, hit square on the off side.",
+    "Straight Drive": "A front-foot drive played straight back past the bowler.",
+    "Sweep": "Played down on one knee, sweeping the ball across the line to the leg side.",
+    "Upper Cut": "A short, wide ball steered upwards over the slips or third man.",
+}
 torch.set_num_threads(max(1, os.cpu_count() or 2))
 
 # ----------------------------------------------------------------------------- model (identical to notebook 06)
@@ -224,99 +240,273 @@ def classify(model, crops):
     return torch.softmax(logits, dim=1)[0].numpy(), attn[0].numpy()
 
 
-def attention_plot(attn, pred_name):
-    fig, ax = plt.subplots(figsize=(8, 2.8))
-    ax.bar(np.arange(1, NUM_FRAMES + 1), attn * 100, color="#2b6cb0")
-    ax.set_xlabel("Frame")
-    ax.set_ylabel("Attention (%)")
-    ax.set_xticks(np.arange(1, NUM_FRAMES + 1))
-    ax.set_title(f"Which frames the model used to predict '{pred_name}'")
-    ax.spines[["top", "right"]].set_visible(False)
-    fig.tight_layout()
-    return fig
+# ----------------------------------------------------------------------------- presentation helpers
+def to_data_uri(rgb, quality=82):
+    ok, buf = cv2.imencode(".jpg", cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, quality])
+    return "data:image/jpeg;base64," + base64.b64encode(buf.tobytes()).decode()
 
-# ----------------------------------------------------------------------------- UI
-st.set_page_config(page_title="Cricket Shot Recognition", page_icon="🏏", layout="wide")
-st.title("🏏 Cricket Batting Shot Recognition")
-st.markdown(
-    "Upload a short **broadcast-style clip** (camera behind the bowler, about 1–2 seconds, one shot). "
-    "The model predicts which of **15 batting shots** was played and shows **which frames it focused on**.\n\n"
-    "**How it works:** 16 frames are sampled → YOLO finds the striker and bat → each frame is cropped around the "
-    "batter → a fine-tuned **EfficientNet-B0** describes each frame → a **bidirectional GRU with temporal "
-    "attention** reads the sequence and classifies the shot. Test accuracy on unseen matches: **82.9%** "
-    "(top-3: 92.6%)."
+
+def run_pipeline(path, start, end):
+    model, striker, bat, striker_id, bat_id = load_models()
+    t0 = time.time()
+    frames, duration = read_frames(path, start, end)
+    if frames is None:
+        return None
+    s_cands, b_boxes = detect(frames, striker, bat, striker_id, bat_id)
+    crops, boxes, found = batter_crops(frames, s_cands, b_boxes)
+    probs, attn = classify(model, crops)
+    detections = []
+    for t in [0, 5, 10, 15]:
+        img = cv2.cvtColor(frames[t], cv2.COLOR_BGR2RGB).copy()
+        x1, y1, x2, y2 = boxes[t].astype(int)
+        cv2.rectangle(img, (x1, y1), (x2, y2), (31, 111, 74), max(3, img.shape[1] // 200))
+        scale = 640 / img.shape[1]
+        detections.append((cv2.resize(img, None, fx=scale, fy=scale), t + 1, bool(found[t])))
+    return {"probs": probs, "attn": attn, "crops": crops, "found": found, "detections": detections,
+            "duration": duration, "seconds": time.time() - t0}
+
+
+CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&display=swap');
+
+:root {
+  --bg: #F7F8F7; --surface: #FFFFFF; --ink: #18201B; --muted: #5E6B63;
+  --turf: #1F6F4A; --turf-tint: #E4F0E9; --line: #E3E7E4;
+}
+html, body, .stApp, .stMarkdown, p, li, label, button, input, textarea, h1, h2, h3, h4 {
+  font-family: 'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+.stApp { background: var(--bg); color: var(--ink); }
+#MainMenu, footer, header[data-testid="stHeader"], [data-testid="stDecoration"] { display: none; }
+.block-container { max-width: 1040px; padding-top: 4.5rem; padding-bottom: 4rem; }
+
+/* Hero */
+.hero h1 {
+  font-size: clamp(2.6rem, 6vw, 4.6rem); font-weight: 800; letter-spacing: -0.035em;
+  line-height: 1.02; margin: 0 0 1.1rem 0; color: var(--ink);
+}
+.hero p { font-size: 1.2rem; line-height: 1.55; color: var(--muted); max-width: 36rem; margin: 0; }
+
+/* Section headings */
+.section-title { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; margin: 3.5rem 0 0.4rem 0; }
+.section-note { color: var(--muted); font-size: 1rem; line-height: 1.55; margin: 0 0 1.2rem 0; max-width: 40rem; }
+
+/* Upload panel */
+[data-testid="stFileUploaderDropzone"] {
+  background: var(--surface); border: 1.5px dashed #C9D3CD; border-radius: 18px; padding: 1.6rem;
+}
+[data-testid="stFileUploaderDropzone"]:hover { border-color: var(--turf); }
+.stButton > button, [data-testid="stBaseButton-primary"] {
+  border-radius: 999px; padding: 0.7rem 1.6rem; font-weight: 700; font-size: 1rem;
+  background: var(--turf); border: none; color: #fff;
+}
+.stButton > button:hover { background: #185C3D; color: #fff; }
+.stButton > button:focus-visible { outline: 3px solid #9CC9B0; outline-offset: 2px; }
+[data-testid="stExpander"] details { border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+
+/* Result */
+.result { margin-top: 3.5rem; }
+.result .lead { color: var(--muted); font-size: 1.05rem; margin: 0 0 0.3rem 0; }
+.result .shot {
+  font-size: clamp(3rem, 9vw, 6.2rem); font-weight: 800; letter-spacing: -0.045em; line-height: 0.98;
+  margin: 0 0 1rem 0; color: var(--ink);
+}
+.result .about { font-size: 1.15rem; line-height: 1.55; color: var(--ink); max-width: 34rem; margin: 0 0 0.6rem 0; }
+.result .confidence { font-size: 1.05rem; color: var(--turf); font-weight: 700; margin: 0; }
+.result .meta { color: var(--muted); font-size: 0.92rem; margin-top: 1.2rem; }
+
+.ranking { background: var(--surface); border: 1px solid var(--line); border-radius: 20px; padding: 1.4rem 1.5rem; margin-top: 0.4rem; }
+.ranking h3 { font-size: 1rem; font-weight: 700; margin: 0 0 1rem 0; }
+.rank-row { margin-bottom: 1rem; }
+.rank-row:last-child { margin-bottom: 0; }
+.rank-label { display: flex; justify-content: space-between; font-size: 0.98rem; margin-bottom: 0.35rem; }
+.rank-label span:last-child { color: var(--muted); font-variant-numeric: tabular-nums; }
+.rank-track { height: 8px; background: var(--turf-tint); border-radius: 999px; overflow: hidden; }
+.rank-fill { height: 100%; background: var(--turf); border-radius: 999px; }
+.rank-row.other .rank-fill { background: #9CB5A6; }
+
+.notice { margin-top: 1.2rem; padding: 0.9rem 1.1rem; border-radius: 14px; background: #FFF6E5; color: #6A4A06; font-size: 0.95rem; line-height: 1.5; }
+
+/* Film strip: frames with attention bars */
+.strip { display: grid; grid-template-columns: repeat(16, minmax(0, 1fr)); gap: 6px; align-items: end; }
+.frame { display: flex; flex-direction: column; align-items: stretch; }
+.bar-zone { height: 84px; display: flex; align-items: flex-end; margin-bottom: 6px; }
+.bar { width: 100%; background: #C3DCCD; border-radius: 6px 6px 2px 2px; transform-origin: bottom;
+       animation: grow 900ms cubic-bezier(.2,.8,.2,1) both; }
+.frame.peak .bar { background: var(--turf); }
+.frame img { width: 100%; aspect-ratio: 1 / 1; object-fit: cover; border-radius: 6px; display: block; }
+.frame.peak img { outline: 2.5px solid var(--turf); outline-offset: 1px; }
+.frame small { text-align: center; color: var(--muted); font-size: 0.72rem; margin-top: 4px; font-variant-numeric: tabular-nums; }
+@keyframes grow { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+@media (prefers-reduced-motion: reduce) { .bar { animation: none; } }
+@media (max-width: 760px) {
+  .strip { grid-template-columns: repeat(8, minmax(0, 1fr)); row-gap: 14px; }
+  .block-container { padding-top: 2.5rem; }
+}
+
+.detections { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.detections figure { margin: 0; }
+.detections img { width: 100%; border-radius: 10px; display: block; }
+.detections figcaption { color: var(--muted); font-size: 0.82rem; margin-top: 0.35rem; }
+@media (max-width: 760px) { .detections { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* How it works */
+.steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1.6rem; margin-top: 0.4rem; }
+.step b { display: block; font-size: 1.02rem; margin-bottom: 0.35rem; }
+.step b span { color: var(--turf); margin-right: 0.35rem; }
+.step p { color: var(--muted); font-size: 0.95rem; line-height: 1.55; margin: 0; }
+@media (max-width: 760px) { .steps { grid-template-columns: 1fr; gap: 1.1rem; } }
+
+.site-footer { margin-top: 4rem; padding-top: 1.6rem; border-top: 1px solid var(--line); color: var(--muted); font-size: 0.88rem; line-height: 1.6; }
+.site-footer p { margin: 0 0 0.7rem 0; max-width: 46rem; }
+.site-footer a { color: var(--turf); }
+.empty { margin-top: 2.2rem; color: var(--muted); font-size: 1rem; }
+</style>
+"""
+
+
+def html_block(markup):
+    st.markdown(markup, unsafe_allow_html=True)
+
+
+def render_result(res):
+    probs, attn = res["probs"], res["attn"]
+    order = probs.argsort()[::-1]
+    pred = CLASSES[order[0]]
+    conf = probs[order[0]] * 100
+
+    left, right = st.columns([1.35, 1], gap="large")
+    with left:
+        html_block(
+            f'<div class="result"><p class="lead">The model thinks this is a</p>'
+            f'<div class="shot">{html.escape(pred)}</div>'
+            f'<p class="about">{html.escape(SHOT_NOTES[pred])}</p>'
+            f'<p class="confidence">{conf:.0f}% confident</p>'
+            f'<p class="meta">Analysed {res["duration"]:.1f} s of video in {res["seconds"]:.1f} s. '
+            f'The batter was confirmed in {int(res["found"].sum())} of {NUM_FRAMES} frames.</p></div>'
+        )
+    with right:
+        rows = []
+        for rank, i in enumerate(order[:3]):
+            rows.append(
+                f'<div class="rank-row{"" if rank == 0 else " other"}"><div class="rank-label">'
+                f'<span>{html.escape(CLASSES[i])}</span><span>{probs[i] * 100:.1f}%</span></div>'
+                f'<div class="rank-track"><div class="rank-fill" style="width:{max(probs[i] * 100, 1.5):.1f}%">'
+                f'</div></div></div>'
+            )
+        html_block('<div class="result"><div class="ranking"><h3>Closest matches</h3>' + "".join(rows) + "</div></div>")
+        notes = []
+        if res["duration"] > 3:
+            notes.append("This clip is longer than the one-second clips the model was trained on. "
+                         "Set start and end times around the shot for a more reliable answer.")
+        if res["found"].sum() == 0:
+            notes.append("The batter could not be confirmed in any frame, so treat this answer with caution.")
+        if notes:
+            html_block('<div class="notice">' + " ".join(notes) + "</div>")
+
+    peak = int(attn.argmax())
+    cells = []
+    for t in range(NUM_FRAMES):
+        height = max(attn[t] / attn.max() * 100, 4)
+        cells.append(
+            f'<div class="frame{" peak" if t == peak else ""}">'
+            f'<div class="bar-zone"><div class="bar" style="height:{height:.0f}%; animation-delay:{t * 35}ms"></div></div>'
+            f'<img src="{to_data_uri(res["crops"][t])}" alt="Cropped frame {t + 1}">'
+            f'<small>{t + 1}</small></div>'
+        )
+    html_block('<div class="section-title">What the model focused on</div>'
+               '<p class="section-note">These are the 16 frames the model saw, cropped around the batter. '
+               'Taller bars mark the frames it relied on most; the darkest one is the moment that mattered most.</p>'
+               '<div class="strip">' + "".join(cells) + "</div>")
+
+    with st.expander("See how the batter was found in the original video"):
+        figs = "".join(
+            f'<figure><img src="{to_data_uri(img)}" alt="Frame {n} with batter box">'
+            f'<figcaption>Frame {n}: {"batter confirmed holding the bat" if ok else "estimated from nearby frames"}'
+            f'</figcaption></figure>'
+            for img, n, ok in res["detections"]
+        )
+        html_block('<div class="detections">' + figs + "</div>")
+
+
+# ----------------------------------------------------------------------------- page
+st.set_page_config(page_title="Which shot was that?", page_icon="🏏", layout="wide")
+html_block(CSS)
+
+html_block(
+    '<div class="hero"><h1>Which shot was that?</h1>'
+    "<p>Upload a broadcast clip of a single delivery. The model follows the batter's movement "
+    "frame by frame and names the shot, from a cover drive to a reverse sweep.</p></div>"
 )
 
-model, striker, bat, striker_id, bat_id = load_models()
+html_block('<div class="section-title">Your clip</div>'
+           '<p class="section-note">Use the usual TV view from behind the bowler, with one shot lasting about '
+           'a second. MP4, AVI, MOV and WebM files up to 50 MB work.</p>')
+upload = st.file_uploader("Your clip", type=["mp4", "avi", "mov", "mkv", "webm"], label_visibility="collapsed")
 
-left, right = st.columns([1, 1])
-with left:
-    upload = st.file_uploader("Batting clip", type=["mp4", "avi", "mov", "mkv", "webm"])
+with st.expander("Trim a longer video"):
     c1, c2 = st.columns(2)
-    start = c1.number_input("Start time (s)", min_value=0.0, value=0.0, step=0.5)
-    end = c2.number_input("End time (s), 0 = to the end", min_value=0.0, value=0.0, step=0.5)
-    run = st.button("Recognise shot", type="primary", disabled=upload is None)
-    if upload is not None:
-        st.video(upload)
+    start = c1.number_input("Start time in seconds", min_value=0.0, value=0.0, step=0.5)
+    end = c2.number_input("End time in seconds (0 means the end of the video)", min_value=0.0, value=0.0, step=0.5)
 
-if run and upload is not None:
+if upload is not None and os.path.splitext(upload.name)[1].lower() in (".mp4", ".webm", ".mov"):
+    st.video(upload)
+
+load_models()   # cached: slow only on the very first start of the app
+identify = st.button("Identify shot", type="primary", disabled=upload is None)
+
+if identify and upload is not None:
     suffix = os.path.splitext(upload.name)[1] or ".mp4"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(upload.getbuffer())
         path = tmp.name
-    t0 = time.time()
-    with st.spinner("Detecting the batter and classifying the shot..."):
-        frames, duration = read_frames(path, start, end)
-        if frames is None:
-            st.error("Could not read any frames. Check the file and the start/end times.")
-            st.stop()
-        s_cands, b_boxes = detect(frames, striker, bat, striker_id, bat_id)
-        crops, boxes, found = batter_crops(frames, s_cands, b_boxes)
-        probs, attn = classify(model, crops)
-    os.remove(path)
+    try:
+        with st.spinner("Finding the batter and reading the shot. This takes 10 to 40 seconds."):
+            result = run_pipeline(path, start, end)
+    finally:
+        os.remove(path)
+    if result is None:
+        st.error("No frames could be read from this file. Check that it is a video and that the start and "
+                 "end times fall inside it.")
+        st.session_state.pop("result", None)
+    else:
+        st.session_state["result"] = result
+        st.session_state["result_for"] = upload.name
 
-    order = probs.argsort()[::-1]
-    pred = CLASSES[order[0]]
-    with right:
-        st.subheader(f"Prediction: {pred}")
-        st.metric("Confidence", f"{probs[order[0]] * 100:.1f}%")
-        for i in order[:3]:
-            st.progress(float(probs[i]), text=f"{CLASSES[i]}: {probs[i] * 100:.1f}%")
-        st.caption(f"Processed in {time.time() - t0:.1f} s · clip length used {duration:.1f} s · "
-                   f"batter confirmed in {int(found.sum())}/{NUM_FRAMES} frames")
-        if duration > 3:
-            st.warning("The model was trained on ~1 s clips containing one shot. "
-                       "For long videos, set the start and end times around the shot.")
-        if found.sum() == 0:
-            st.warning("The batter was not confidently detected, so this prediction may be unreliable.")
+if upload is None:
+    st.session_state.pop("result", None)
 
-    st.pyplot(attention_plot(attn, pred))
+if "result" in st.session_state and upload is not None and st.session_state.get("result_for") == upload.name:
+    render_result(st.session_state["result"])
+else:
+    html_block('<p class="empty">Upload a clip and select Identify shot to see the result here.</p>')
 
-    st.subheader("What the model saw")
-    st.caption("Cropped frames fed to the model, with each frame's attention weight")
-    for row in range(0, NUM_FRAMES, 8):
-        cols = st.columns(8)
-        for c, t in zip(cols, range(row, row + 8)):
-            c.image(crops[t], caption=f"frame {t + 1} · {attn[t] * 100:.0f}%")
+html_block(
+    '<div class="section-title">How it works</div>'
+    '<p class="section-note">Each clip goes through the same four stages the model was trained with.</p>'
+    '<div class="steps">'
+    '<div class="step"><b><span>1</span>Sample the clip</b><p>Sixteen evenly spaced frames are taken from '
+    'start to finish, so every clip has the same length.</p></div>'
+    '<div class="step"><b><span>2</span>Find the batter</b><p>Two detectors locate the striker and the bat, '
+    'and each frame is cropped to a square around them.</p></div>'
+    '<div class="step"><b><span>3</span>Read each frame</b><p>A fine-tuned EfficientNet-B0 turns every crop '
+    'into a description of the body position and bat angle.</p></div>'
+    '<div class="step"><b><span>4</span>Follow the motion</b><p>A bidirectional GRU reads the frames in '
+    'order, and attention picks out the moments that decide the shot.</p></div>'
+    "</div>"
+)
 
-    st.caption("Batter detection on the original frames (yellow = crop region)")
-    cols = st.columns(4)
-    for c, t in zip(cols, [0, 5, 10, 15]):
-        img = cv2.cvtColor(frames[t], cv2.COLOR_BGR2RGB).copy()
-        x1, y1, x2, y2 = boxes[t].astype(int)
-        cv2.rectangle(img, (x1, y1), (x2, y2), (255, 210, 0), max(2, img.shape[1] // 250))
-        c.image(img, caption=f"frame {t + 1}" + (" · batter found" if found[t] else " · fallback box"))
-
-st.divider()
-st.markdown(
-    "**Limitations.** Trained only on broadcast footage filmed from behind the bowler. Side-on, phone or "
-    "net-practice videos may give wrong answers. The most common confusions are Hook ↔ Pull, "
-    "Lofted Offside ↔ Lofted Legside and Straight Drive ↔ Cover Drive. Runs on a free CPU, so expect "
-    "roughly 10–40 seconds per clip.\n\n"
-    "**Credits.** Dataset and striker/bat detection models: Dihan et al., *CricShot10k: A Large-Scale Video "
-    "Dataset for Cricket Shot Classification*, IEEE Access, 2026 "
-    "([GitHub](https://github.com/Dihan69/CricShot10k)), released for non-commercial research use. "
-    "Model architecture follows *Modern Deep Learning Approaches for Cricket Shot Classification: "
-    "A Comprehensive Baseline Study*, arXiv:2510.09187, 2025. "
-    "Non-commercial student project (Advanced Deep Learning, IIIT Sri City): B Vishwesh, B Srimanreddy, E Tharun."
+html_block(
+    '<div class="site-footer">'
+    "<p>On 1,350 clips from 76 matches the model never saw during training, it named the right shot 82.9% of "
+    "the time, and the right shot was among its top three 92.6% of the time. It was trained only on broadcast "
+    "footage filmed from behind the bowler, so side-on, phone or net-practice videos may be misread. Hook and "
+    "pull, lofted shots to either side, and straight and cover drives are the pairs it confuses most.</p>"
+    '<p>Dataset and batter detection models by Dihan et al., '
+    '<a href="https://github.com/Dihan69/CricShot10k" target="_blank" rel="noopener">CricShot10k</a> '
+    "(IEEE Access, 2026), released for non-commercial research. Model design follows the baseline study "
+    "<em>Modern Deep Learning Approaches for Cricket Shot Classification</em> (arXiv:2510.09187).</p>"
+    "<p>A student project for Advanced Deep Learning at IIIT Sri City by B Vishwesh, B Srimanreddy and "
+    "E Tharun.</p></div>"
 )
